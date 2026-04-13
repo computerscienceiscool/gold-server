@@ -8,6 +8,53 @@ This spec defines a "gold image" approach inspired by infrastructures.org:
 do the slow shared work once, save it as a Docker image, and start new
 codespaces from that image.
 
+## Progressive image building
+
+The 12-minute install is solved by *cutting a new baseline image whenever
+install time grows too long*, not by rewriting where installs happen.
+Everything always lives in the Makefile; the Dockerfile stays minimal.
+This pattern is ISConf heritage (Chase Manhattan Bank, 1990s), adapted
+for containers.
+
+The cycle:
+
+1. Start `FROM` a **pinned** vendor image (pinned by sha256 digest, not
+   `:latest`). The Dockerfile's only substantive line is `decomk run`.
+2. decomk runs the workspace-config Makefile at image build time.
+   Each target touches a stamp in `/var/decomk/stamps/` on success.
+3. Build completes; tag the resulting image with the next block number
+   (see below) and push it to the registry.
+4. Update the Dockerfile `FROM` line and every downstream
+   `devcontainer.json` to point at the new image tag.
+5. Keep adding targets to the Makefile. Because stamps are present,
+   previously-installed steps are no-ops; only the new ones run at
+   container-create time.
+6. When cumulative install time grows back to ~10–15 min, cut the next
+   block and return to step 3.
+
+Stamp files + a pinned `FROM` are what make the Makefile safe to run at
+both image-build time (once, into the gold image) and container-create
+time (again, as a no-op). The speed problem gets fixed by periodically
+freezing progress into a new image, not by moving steps between files.
+
+## Block numbering scheme
+
+Block numbers track image lineage. Each block's image `FROM`s the
+previous block's image. See `glossary.md` for the naming cheat sheet.
+
+| Block     | Contents                                                         | Based on     |
+|-----------|------------------------------------------------------------------|--------------|
+| `block00` | Pinned vendor base + decomk binary only. Just enough to bootstrap. | vendor image |
+| `block0`  | `block00` + TOOLS + GO + PYTHON (apt packages, goenv/pyenv, language runtimes). The current gold image payload. | `block00`    |
+| `block10` | `block0` + the next shared layer (added targets become prereqs). | `block0`     |
+| `blockN`  | Same pattern. Numbers leave room to insert intermediate cuts.    | `block(N-M)` |
+
+**Rule:** a new cut freezes the current block and starts the next one.
+Never delete an old block tag — a codespace may depend on it.
+Project-specific tools (oss-cad-suite, cocotb, etc.) never belong in a
+block; they hang off project keys in `decomk.conf` and install at
+container-create time.
+
 ## What goes in the gold image
 
 These are the DEFAULT targets from workspace-config that rarely change and
